@@ -1,0 +1,37 @@
+# Extra domains blocked on top of HaGeZi Pro + HaGeZi DoH.
+# One domain per line; blocking a domain also blocks all its subdomains.
+# Edit on GitHub, commit, and the weekly workflow (or "Run workflow") rebuilds
+# docs/blocklist.bin. Devices pick it up on their next auto-update.
+
+# --- JioHotstar ad server ---
+hesads.akamaized.net
+
+# --- Google / YouTube / DoubleClick ads ---
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+googletagservices.com
+adservice.google.com
+adservice.google.co.in
+ads.youtube.com
+
+# --- Amazon ads ---
+amazon-adsystem.com
+
+# --- Ad / engagement SDKs common in Indian OTT and apps ---
+ads-api.inmobi.com
+sdk.inmobi.com
+ads.pubmatic.com
+media.net
+wzrkt.com
+clevertap-prod.com
+sdk.moengage.com
+cdn.moengage.com
+
+# --- Native ad widgets on Indian news sites ---
+taboola.com
+outbrain.com
+
+# --- iCloud Private Relay (bypasses the network DNS on iPhones/Macs) ---
+mask.icloud.com
+mask-h2.icloud.com

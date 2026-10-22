@@ -86,9 +86,10 @@ footer a{color:#58a6ff;text-decoration:none}footer a:hover{text-decoration:under
   <div class=panel>
     <div class=panel-head><h2>Custom Blocked Domains</h2></div>
     <div class="row row-full" style="margin-bottom:10px">
-      <input id=dom placeholder="ads.example.com" class=flex-1>
+      <input id=dom placeholder="ads.example.com  or a pattern like  ads.*" class=flex-1>
       <button class=primary onclick=addDom()>Block domain</button>
     </div>
+    <div class=hint>A domain also blocks all its subdomains. Use <b>*</b> for patterns (e.g. <code>ads.*</code>, <code>*adserver*</code>); keep patterns specific, broad ones break normal sites.</div>
     <div class=table-wrap><table id=cl><tbody></tbody></table></div>
   </div>
 
@@ -96,7 +97,7 @@ footer a{color:#58a6ff;text-decoration:none}footer a:hover{text-decoration:under
     <div class=panel-head><h2>Blocklist Management</h2></div>
     <div style="font-weight:600;font-size:11px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Remote Auto-Update</div>
     <div class="row row-full" style="margin-bottom:6px">
-      <input id=uurl placeholder="https://9m2pju.github.io/9M2PJU-ESP32-C3-AdBlocker/blocklist.bin" class=flex-1>
+      <input id=uurl placeholder="https://github.com/Lakkanna/9M2PJU-ESP32-C3-AdBlocker/releases/download/blocklist/blocklist.bin" class=flex-1>
       <div class=inline-controls>
         <span style="display:inline-flex;align-items:center;gap:4px;color:#8b949e;font-size:13px">every <input id=uiv size=2 value=24 style="width:48px;text-align:center"> h</span>
         <button onclick=saveUpd()>Save</button>
@@ -159,6 +160,11 @@ footer a{color:#58a6ff;text-decoration:none}footer a:hover{text-decoration:under
       <button onclick=toggleDhcp()>Toggle DHCP Server</button>
       <span class=hint style="margin:0">When enabled, C3 hands out its own IP as DNS to network clients.</span>
     </div>
+    <div class="row row-full" style="margin-top:8px">
+      <button onclick=toggleCname()>Toggle CNAME check</button>
+      <span id=cnamest class=tag></span>
+      <span class=hint style="margin:0">Also blocks allowed names that secretly point (CNAME) to a blocked ad/tracker host.</span>
+    </div>
 
     <hr class=div>
 
@@ -188,10 +194,11 @@ T=s.token||'';
 host.textContent='@ '+s.ip;
 if(s.version)fwver.textContent='v'+s.version;
 sys.innerHTML=[['Total blocked',fmt(s.blocked),'b'],['Total allowed',fmt(s.allowed),'a'],['Blocklist',fmt(s.domains)+' domains',''],
-['WiFi Signal',s.rssi+' dBm',''],['Temp',s.temp+' C',''],['TX Power',(s.txpower||'8.5')+' dBm',''],['Firmware','v'+(s.version||'1.2.0')+(s.single_app?' (single-app)':''),''],['Free RAM',Math.round(s.heap/1024)+' KB',''],['Uptime',s.uptime,''],
+['WiFi Signal',s.rssi+' dBm',''],['Temp',s.temp+' C',''],['TX Power',(s.txpower||'8.5')+' dBm',''],['Firmware','v'+(s.version||'1.3.0')+(s.single_app?' (single-app)':''),''],['Free RAM',Math.round(s.heap/1024)+' KB',''],['Uptime',s.uptime,''],
 ['FS',s.fstotal?Math.round(s.fsused/1024)+' / '+Math.round(s.fstotal/1024)+' KB':'—',''],
 ['Clients',s.clients.length,''],['Pending',s.pending||0,''],['Bloom',s.bloom||'off',''],
-['Blocklist sig',(s.blsig||'unverified')+(s.sigreq?' (required)':''),'']]
+['Blocklist sig',(s.blsig||'unverified')+(s.sigreq?' (required)':''),''],
+['CNAME blocked',fmt(s.cnameblocked||0),'b'],['Patterns',s.patterns||0,'']]
 .map(c=>`<div class=card><div class="v ${c[2]}">${c[1]}</div><div class=l>${c[0]}</div></div>`).join('');
 ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a.allowed)).map(c=>
 `<tr><td>${esc(c.ip)}${c.banned?' <span class=tag style=color:#f85149>BANNED</span>':''}</td><td>${esc(c.mac)}</td>
@@ -204,12 +211,14 @@ ustat.textContent=s.upstat||'—';
 sigst.textContent=((s.blsig||'unverified')+(s.sigreq?' — required':' — optional')+(s.keyid?' ('+s.keyid+')':''))||'—';
 dhcpst.textContent=s.dhcp?'ON':'OFF';
 dhcpst.style.color=s.dhcp?'#3fb950':'#8b949e';
+cnamest.textContent=s.cname?'ON':'OFF';cnamest.style.color=s.cname?'#3fb950':'#8b949e';
 wifi.textContent=s.wifi||'—';
 if(document.activeElement!=txsel && s.txpower)txsel.value=s.txpower;}
 function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURIComponent(d),{headers:H()}).then(()=>{dom.value='';load()})}}
 function saveUpd(){let u=uurl.value.trim();if(u&&u.indexOf('://')<0)u='https://'+u;fetch('/setupdate?u='+encodeURIComponent(u)+'&h='+(parseInt(uiv.value)||24),{headers:H()}).then(load)}
 function fetchNow(){ustat.textContent='fetching...';fetch('/fetchnow',{headers:H()}).then(r=>r.text()).then(t=>{ustat.textContent=t;load()})}
 function toggleDhcp(){fetch('/dhcp',{headers:H()}).then(r=>r.text()).then(t=>{alert(t);load()})}
+function toggleCname(){fetch('/cname',{headers:H()}).then(r=>r.text()).then(t=>{alert(t);load()})}
 function toggleSigReq(){fetch('/sigrequire',{headers:H()}).then(r=>r.text()).then(t=>{alert(t);load()})}
 function saveWifi(){let s=wssid.value.trim(),p=wpass.value.trim();if(!s){wmsg.textContent='enter SSID';return}
 wmsg.textContent='saving...';fetch('/setwifi',{method:'POST',headers:Object.assign({'Content-Type':'application/x-www-form-urlencoded'},H()),body:'ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)}).then(r=>r.text()).then(t=>{wmsg.textContent=t;})}

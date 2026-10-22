@@ -1,0 +1,99 @@
+name: Build firmware + web flasher
+
+# Builds the single-app (max-blocklist) firmware with today's home list and
+# commits the web-flasher files to docs/ on the same branch, so GitHub Pages
+# (Settings -> Pages -> main /docs) serves a one-click browser flasher:
+#   https://lakkanna.github.io/9M2PJU-ESP32-C3-AdBlocker/
+# On main, docs/build-status.txt records the result (and the error tail on
+# failure); on other branches the build only checks that everything compiles.
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths: ['src/**', 'platformio.ini', 'partitions-single.csv', 'lists/**', 'tools/**', '.github/workflows/build-flasher.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio cryptography
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cp src/secrets.example.h src/secrets.h
+          {
+            python3 tools/test_build_blocklist.py
+            mkdir -p data
+            bash tools/build_lakshya_list.sh data/blocklist.bin
+            pio run -e c3-single
+            pio run -e c3-single -t buildfs
+          } 2>&1 | tee build.log
+
+      - name: Prepare flasher files
+        if: steps.build.outcome == 'success'
+        run: |
+          B=.pio/build/c3-single
+          cp $B/bootloader.bin $B/partitions.bin $B/firmware.bin docs/
+          cp $B/littlefs.bin docs/blocklist-fs.bin
+          ESPTOOL=$(find ~/.platformio/packages -name esptool.py -path '*tool-esptoolpy*' | head -1)
+          # Offsets match partitions-single.csv (factory 0x10000, LittleFS 0x150000)
+          python3 "$ESPTOOL" --chip esp32c3 merge_bin -o docs/full-flash.bin \
+            --flash_mode dio --flash_size 4MB \
+            0x0 docs/bootloader.bin 0x8000 docs/partitions.bin \
+            0x10000 docs/firmware.bin 0x150000 docs/blocklist-fs.bin
+          VER=$(grep -oP 'FIRMWARE_VERSION = "\K[^"]+' src/main.cpp)
+          cat > docs/manifest.json <<JSON
+          {
+            "name": "C3 AdBlocker (Lakshya edition)",
+            "version": "$VER",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "bootloader.bin", "offset": 0 },
+                  { "path": "partitions.bin", "offset": 32768 },
+                  { "path": "firmware.bin", "offset": 65536 },
+                  { "path": "blocklist-fs.bin", "offset": 1376256 }
+                ]
+              }
+            ]
+          }
+          JSON
+          ls -l docs/
+
+      # Only main gets the generated docs/ committed back, so pull requests
+      # stay a single commit. Branch builds just verify that everything compiles.
+      - name: Record status and commit
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          {
+            echo "commit: ${GITHUB_SHA}"
+            echo "result: ${{ steps.build.outcome }}"
+            echo "date:   $(date -u)"
+            echo "----- last 120 lines of build log -----"
+            tail -n 120 build.log 2>/dev/null || true
+          } > docs/build-status.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898713+github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          git diff --cached --quiet || git commit -m "Build firmware + web flasher (${{ steps.build.outcome }}) for ${GITHUB_SHA::7}"
+          git push
+
+      - name: Fail if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1

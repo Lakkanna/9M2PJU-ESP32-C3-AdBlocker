@@ -1,0 +1,3 @@
+# Allowlist: never block these (also unblocks their subdomains, and drops any
+# listed parent domain that would block them). Add a line if a site/app breaks,
+# commit, then run the "Sync Pages blocklist" workflow.
