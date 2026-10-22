@@ -122,6 +122,12 @@ def main():
                     help='cap the list at N domains (first N sorted; prefer smaller sources)')
     ap.add_argument('--truncate', action='store_true',
                     help='with --target-fpr, auto-cap to max domains meeting the target')
+    ap.add_argument('--allow', action='append', default=[], metavar='FILE',
+                    help='allowlist file (one domain per line). Removes that domain, its '
+                         'subdomains, and any listed parent that would block it (the firmware '
+                         'blocks every subdomain of a listed domain). Repeatable.')
+    ap.add_argument('--must-work', default=None, metavar='FILE',
+                    help='fail (exit 2, no output written) if any domain in FILE would be blocked')
     ap.add_argument('--sign-key', default=None, metavar='PRIVKEY_PEM',
                     help='also write OUT.sig: DER ECDSA P-256 signature over the .bin '
                          '(verified by firmware against src/blocklist_pubkey.h)')
@@ -148,6 +154,46 @@ def main():
                 d = norm(d)
                 if '.' in d and ' ' not in d:
                     domains.add(d)
+
+    # Allowlist: drop allowed domains, their subdomains, and blocking parents.
+    allow = set()
+    for af in args.allow:
+        for line in read_source(af).splitlines():
+            line = line.split('#', 1)[0].strip()
+            if line:
+                allow.add(norm(line))
+    if allow:
+        removed = []
+        for d in list(domains):
+            for a in allow:
+                if d == a or d.endswith('.' + a) or a.endswith('.' + d):
+                    removed.append(d)
+                    domains.discard(d)
+                    break
+        print(f'allowlist        : {len(allow)} entries removed {len(removed):,} domains', file=sys.stderr)
+        for d in sorted(removed)[:50]:
+            print(f'   - {d}', file=sys.stderr)
+
+    if args.must_work:
+        def blocked_by(name):
+            parts = name.split('.')
+            for i in range(len(parts) - 1):
+                if '.'.join(parts[i:]) in domains:
+                    return '.'.join(parts[i:])
+            return None
+        bad = []
+        for line in read_source(args.must_work).splitlines():
+            line = line.split('#', 1)[0].strip()
+            if line:
+                b = blocked_by(norm(line))
+                if b:
+                    bad.append(f'{line} (blocked by {b})')
+        if bad:
+            print('!! must-work domains would be blocked — refusing to write output:', file=sys.stderr)
+            for b in bad:
+                print('   ' + b, file=sys.stderr)
+            sys.exit(2)
+        print('must-work check  : all OK', file=sys.stderr)
 
     # Compute 40-bit hashes for the sorted flash table
     domain_list = sorted(domains)

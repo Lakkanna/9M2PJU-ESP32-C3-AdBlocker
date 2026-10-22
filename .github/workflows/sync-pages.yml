@@ -14,11 +14,9 @@ name: Sync Pages blocklist
 # the update as "bad signature"). Unsigned Pages builds are accepted as
 # UNVERIFIED unless the device toggled require-signed.
 
+# Fork note: devices built from this fork auto-update from the "blocklist"
+# release asset (see blocklist-daily.yml), so this upstream job is manual-only.
 on:
-  release:
-    types: [published]
-  schedule:
-    - cron: '0 3 * * 1'  # Mondays 03:00 UTC
   workflow_dispatch:
 
 permissions:

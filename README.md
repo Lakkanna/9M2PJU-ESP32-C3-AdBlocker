@@ -1,5 +1,19 @@
 # 9M2PJU-ESP32-C3-AdBlocker
 
+> **Fork notes (Lakkanna / Lakshya edition, v1.3.0)**
+> - **Power-cut safe:** on boot the board keeps retrying the saved WiFi (~3 min), and even in
+>   setup mode it keeps retrying in the background and reboots into ad-blocking once WiFi is back.
+> - **Custom domains fixed:** they were gated behind the Bloom filter and almost never matched.
+> - **Wildcard patterns:** custom entries may contain `*` (e.g. `ads.*`, `*adserver*`).
+> - **CNAME uncloaking:** replies whose CNAME target is blocked are sinkholed (dashboard toggle).
+> - **Bigger list on the single-app layout:** HaGeZi Pro + HaGeZi DoH + `lists/extra-block.txt`,
+>   minus `lists/allow.txt`, rebuilt **daily** by `.github/workflows/blocklist-daily.yml` and
+>   published as the `blocklist` release asset (the firmware's default auto-update URL).
+>   A build that would block anything in `lists/must-work.txt` is never published.
+> - **Web flasher:** `.github/workflows/build-flasher.yml` builds the single-app firmware and
+>   writes the flasher files to `docs/` (enable Pages: Settings → Pages → `main` / `docs`).
+
+
 <p align="center">
   <img src="docs/banner.jpg" alt="9M2PJU ESP32-C3 AdBlocker" width="100%">
 </p>

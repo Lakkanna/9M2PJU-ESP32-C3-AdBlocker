@@ -66,11 +66,12 @@ static const int DNS_BUF_SIZE = 1232;       // RFC 6891 max UDP DNS payload
 static const int MAX_PENDING = 32;          // concurrent outstanding upstream queries
 static const int MAX_CLIENTS = 96;
 static const int MAX_CUSTOM = 200;
+static const int MAX_PATTERNS = 32;       // custom entries containing '*'
 static const int MAX_BAN = 32;
 static const int MAX_DHCP_LEASES = 32;
 static const uint32_t UPSTREAM_TIMEOUT_MS = 2000;
 static const uint32_t REMOTE_FETCH_IDLE_MS = 3000;  // only fetch when DNS idle this long
-static const char* FIRMWARE_VERSION = "1.2.0";
+static const char* FIRMWARE_VERSION = "1.3.0";
 static const String DASHBOARD_ETAG = String("c3adb-v") + FIRMWARE_VERSION;
 
 // ---- WiFi TX power & thermal configuration ----
@@ -222,6 +223,31 @@ static void sortCustom() {
     customHash[j+1] = h; customDom[j+1] = d;
   }
 }
+// Wildcard patterns: custom entries containing '*' (e.g. "ads.*", "*adserver*").
+// Matched against the full queried domain; '*' matches any run of characters.
+static int patternIdx[MAX_PATTERNS];
+static int numPatterns = 0;
+static void refreshPatterns() {
+  numPatterns = 0;
+  for (int i = 0; i < numCustom && numPatterns < MAX_PATTERNS; i++)
+    if (customDom[i].indexOf('*') >= 0) patternIdx[numPatterns++] = i;
+}
+static bool globMatch(const char* p, const char* s) {
+  const char* star = nullptr; const char* ss = s;
+  while (*s) {
+    if (*p == '*') { star = p++; ss = s; }
+    else if (*p == *s) { p++; s++; }
+    else if (star) { p = star + 1; s = ++ss; }
+    else return false;
+  }
+  while (*p == '*') p++;
+  return *p == 0;
+}
+static bool matchesPattern(const char* domain) {
+  for (int i = 0; i < numPatterns; i++)
+    if (globMatch(customDom[patternIdx[i]].c_str(), domain)) return true;
+  return false;
+}
 static bool inCustom(uint64_t h) {
   int lo = 0, hi = numCustom - 1;
   while (lo <= hi) {
@@ -246,7 +272,10 @@ static bool isBlocked(const char* domain, size_t dlen) {
     bool checkFlash = bloomMayContain(h64);  // false = definitely not in list, skip flash
     if (checkFlash) flashChecks++;
     else bloomMisses++;
-    if (checkFlash && (inFlash(h40) || inCustom(h40))) return true;
+    // Custom domains are not in the on-disk bloom filter, so check them
+    // independently (cheap RAM binary search). Gating them behind the bloom
+    // made dashboard-added domains almost never match.
+    if ((checkFlash && inFlash(h40)) || inCustom(h40)) return true;
     const char* dot = (const char*)memchr(p, '.', remaining);
     if (!dot) break;
     size_t consumed = (size_t)(dot - p) + 1;
@@ -254,7 +283,7 @@ static bool isBlocked(const char* domain, size_t dlen) {
     p = dot + 1;
     if (!memchr(p, '.', remaining)) break;  // don't test bare TLD
   }
-  return false;
+  return numPatterns > 0 && matchesPattern(domain);
 }
 
 // ---- persistence: custom domains ----
@@ -264,7 +293,7 @@ static void loadCustom() {
   if (!f) return;
   while (f.available() && numCustom < MAX_CUSTOM) {
     String l = f.readStringUntil('\n'); l.trim(); l.toLowerCase();
-    if (l.length() && l.indexOf('.') > 0) {
+    if (l.length() && (l.indexOf('.') > 0 || l.indexOf('*') >= 0)) {
       customDom[numCustom] = l;
       customHash[numCustom] = fnv40(l.c_str(), l.length());
       numCustom++;
@@ -272,6 +301,7 @@ static void loadCustom() {
   }
   f.close();
   sortCustom();
+  refreshPatterns();
 }
 static void saveCustom() {
   File f = LittleFS.open("/custom.txt", "w");
@@ -282,12 +312,18 @@ static void saveCustom() {
 static bool addCustom(String d) {
   d.trim(); d.toLowerCase();
   if (d.startsWith("www.")) d = d.substring(4);
-  if (!d.length() || d.indexOf('.') < 0 || numCustom >= MAX_CUSTOM) return false;
+  bool isPattern = d.indexOf('*') >= 0;
+  if (!d.length() || numCustom >= MAX_CUSTOM) return false;
+  if (!isPattern && d.indexOf('.') < 0) return false;
+  // Patterns need some literal text, so "*" / "**" can't block everything.
+  if (isPattern) { String lit = d; lit.replace("*", ""); lit.replace(".", ""); if (lit.length() < 3) return false; }
+  if (isPattern && numPatterns >= MAX_PATTERNS) return false;
   for (int i = 0; i < numCustom; i++) if (customDom[i] == d) return false;
   customDom[numCustom] = d;
   customHash[numCustom] = fnv40(d.c_str(), d.length());
   numCustom++;
   sortCustom();
+  refreshPatterns();
   saveCustom();
   return true;
 }
@@ -297,6 +333,7 @@ static void removeCustom(String d) {
   for (int i = 0; i < numCustom; i++) if (customDom[i] == d) {
     for (int j = i; j < numCustom - 1; j++) { customDom[j] = customDom[j+1]; customHash[j] = customHash[j+1]; }
     numCustom--;
+    refreshPatterns();
     saveCustom();
     return;
   }
@@ -411,6 +448,85 @@ static int buildBlocked(uint8_t* pkt, int qend, uint16_t qtype) {
   return qend;  // other qtypes: no answer (NXDOMAIN-ish)
 }
 
+// ---- CNAME uncloaking ----
+// An allowed name can be an alias (CNAME) for a known ad/tracker host
+// (e.g. ads.site.com -> tracker.adnetwork.net). After the upstream answers,
+// walk the answer section; if any CNAME target is on the blocklist, replace
+// the reply with the normal sinkhole answer. Toggle from the dashboard.
+static bool cnameCheck = true;
+static uint32_t cnameBlocked = 0;
+
+// Reads a (possibly compressed) DNS name at *off. Returns false on malformed
+// input. If out is non-null, writes the lowercase dotted name (no trailing dot).
+static bool readDnsName(const uint8_t* pkt, int len, int* off, char* out, size_t outSz) {
+  int i = *off, jumps = 0; bool jumped = false; size_t o = 0;
+  while (true) {
+    if (i >= len) return false;
+    uint8_t l = pkt[i];
+    if (l == 0) { if (!jumped) *off = i + 1; break; }
+    if ((l & 0xC0) == 0xC0) {
+      if (i + 1 >= len || ++jumps > 16) return false;
+      int ptr = ((l & 0x3F) << 8) | pkt[i + 1];
+      if (!jumped) *off = i + 2;
+      jumped = true; i = ptr; continue;
+    }
+    if (l & 0xC0) return false;
+    i++;
+    if (i + l > len) return false;
+    if (out) {
+      if (o + l + 2 >= outSz) return false;
+      if (o) out[o++] = '.';
+      for (uint8_t k = 0; k < l; k++) out[o++] = tolower(pkt[i + k]);
+    }
+    i += l;
+  }
+  if (out) out[o] = 0;
+  return true;
+}
+
+// True if any CNAME target in the reply's answer section is blocked.
+static bool replyHasBlockedCname(const uint8_t* pkt, int len) {
+  if (!cnameCheck || !numHashes || len < 12) return false;
+  int qd = (pkt[4] << 8) | pkt[5];
+  int an = (pkt[6] << 8) | pkt[7];
+  int off = 12;
+  for (int q = 0; q < qd; q++) {
+    if (!readDnsName(pkt, len, &off, nullptr, 0)) return false;
+    off += 4;
+  }
+  char name[256];
+  for (int a = 0; a < an && a < 16; a++) {
+    if (!readDnsName(pkt, len, &off, nullptr, 0)) return false;
+    if (off + 10 > len) return false;
+    uint16_t type = (pkt[off] << 8) | pkt[off + 1];
+    uint16_t rdlen = (pkt[off + 8] << 8) | pkt[off + 9];
+    off += 10;
+    if (off + rdlen > len) return false;
+    if (type == 5) {  // CNAME
+      int r = off;
+      if (readDnsName(pkt, len, &r, name, sizeof(name))) {
+        size_t nl = strlen(name);
+        if (nl && isBlocked(name, nl)) return true;
+      }
+    }
+    off += rdlen;
+  }
+  return false;
+}
+
+// If the reply cloaks a blocked CNAME, rewrite it in place as a sinkhole
+// answer. Returns the new length (or the original length if untouched).
+static int sinkholeCnameReply(uint8_t* pkt, int len) {
+  if (!replyHasBlockedCname(pkt, len)) return len;
+  char domain[256]; uint16_t qtype = 0; int qend = len;
+  if (!parseQuery(pkt, len, domain, &qtype, &qend)) return len;
+  pkt[5] = 1;  // QDCOUNT=1 (we only keep the first question)
+  pkt[4] = 0;
+  cnameBlocked++;
+  LOG("[cname] blocked cloaked alias for %s\n", domain);
+  return buildBlocked(pkt, qend, qtype);
+}
+
 // ---- async DNS forwarding ----
 WiFiUDP dnsServer;     // listens on :53 for client queries
 WiFiUDP upstream;      // ephemeral port for upstream queries/replies
@@ -445,6 +561,9 @@ static bool pollUpstream(uint8_t* buf, int bufSize) {
   if (rlen < 2) return true;
   uint16_t replyID = (buf[0] << 8) | buf[1];
   if (replyID >= MAX_PENDING || !pending[replyID].active) return true;
+  // CNAME uncloaking: sinkhole replies that alias a blocked host.
+  int newLen = sinkholeCnameReply(buf, rlen);
+  if (newLen != rlen) { totalBlocked++; if (totalAllowed) totalAllowed--; rlen = newLen; }
   // Restore original query ID
   buf[0] = (pending[replyID].originalID >> 8) & 0xFF;
   buf[1] = pending[replyID].originalID & 0xFF;
@@ -520,6 +639,8 @@ static int forwardUpstreamSync(uint8_t* pkt, int qlen) {
     if (sz > 0) {
       int n = tcpUpstream.read(pkt, DNS_BUF_SIZE);
       if (n >= 2) {
+        int m = sinkholeCnameReply(pkt, n);
+        if (m != n) { totalBlocked++; if (totalAllowed) totalAllowed--; n = m; }
         pkt[0] = (origID >> 8) & 0xFF; pkt[1] = origID & 0xFF;
         return n;
       }
@@ -883,6 +1004,9 @@ static void handleStats() {
              ",\"txpower\":\"" + txPowerSetting + "\"" +
              ",\"blsig\":\"" + (blSigned ? "signed" : "unverified") + "\"" +
              ",\"sigreq\":" + (requireSigned ? "true" : "false") +
+             ",\"cname\":" + (cnameCheck ? "true" : "false") +
+             ",\"cnameblocked\":" + cnameBlocked +
+             ",\"patterns\":" + numPatterns +
              ",\"keyid\":\"" + BL_KEY_ID + "\"" +
              ",\"clients\":[";
   for (int i = 0; i < numClients; i++) {
@@ -955,6 +1079,22 @@ static void handleSetWifi() {
   web.send(200, "text/plain", "saved — rebooting...");
   delay(500);
   ESP.restart();
+}
+
+static void loadCnameCfg() {
+  File f = LittleFS.open("/cname.cfg", "r");
+  if (!f) return;  // default ON
+  String v = f.readStringUntil('\n'); v.trim();
+  cnameCheck = (v != "0");
+  f.close();
+}
+static void handleCnameToggle() {
+  if (!checkAuth()) { requireAuth(); return; }
+  if (!checkToken()) { web.send(403, "text/plain", "bad token"); return; }
+  cnameCheck = !cnameCheck;
+  File f = LittleFS.open("/cname.cfg", "w");
+  if (f) { f.println(cnameCheck ? "1" : "0"); f.close(); }
+  web.send(200, "text/plain", cnameCheck ? "CNAME checking ON" : "CNAME checking OFF");
 }
 
 static void handleSigRequire() {
@@ -1296,7 +1436,11 @@ static void handleUpload() {
 
 // ---- remote blocklist auto-update ----
 
-static const char* DEFAULT_UPDATE_URL = "https://9m2pju.github.io/9M2PJU-ESP32-C3-AdBlocker/blocklist.bin";
+// Daily-rebuilt list (HaGeZi Pro + HaGeZi DoH + lists/extra-block.txt, minus
+// lists/allow.txt) published as the "blocklist" release asset of this fork by
+// .github/workflows/blocklist-daily.yml. A build that would block anything in
+// lists/must-work.txt is never published, so the live list stays as-is.
+static const char* DEFAULT_UPDATE_URL = "https://github.com/Lakkanna/9M2PJU-ESP32-C3-AdBlocker/releases/download/blocklist/blocklist.bin";
 
 static void normalizeUpdateUrl(String &u) {
   u.trim();
@@ -1708,9 +1852,22 @@ static void handleCaptiveDns() {
   }
 }
 
+static bool hasSavedWifi() {
+  String ss, pp;
+  return loadWifiCfg(ss, pp) || String(WIFI_SSID) != "YOUR_WIFI_SSID";
+}
+
 static void runCaptivePortal() {
-  WiFi.mode(WIFI_AP);
+  // If a network is already saved (e.g. after a power cut the board booted
+  // before the router's WiFi was up), keep trying it in the background while
+  // the setup AP is offered. As soon as the saved network is back and nobody
+  // is using the setup page, reboot into normal ad-blocking mode.
+  String bgSsid, bgPass;
+  bool bgRetry = loadWifiCfg(bgSsid, bgPass);
+  if (!bgRetry && String(WIFI_SSID) != "YOUR_WIFI_SSID") { bgSsid = WIFI_SSID; bgPass = WIFI_PASS; bgRetry = true; }
+  WiFi.mode(bgRetry ? WIFI_AP_STA : WIFI_AP);
   WiFi.softAP("C3AdBlock-Setup");
+  if (bgRetry) WiFi.begin(bgSsid.c_str(), bgPass.c_str());
   applyTxPower(txPowerSetting);
   LOGN("\n[captive] AP: C3AdBlock-Setup — connect and open http://192.168.4.1");
   captiveDns.begin(53);
@@ -1734,9 +1891,24 @@ static void runCaptivePortal() {
   });
   web.begin();
 
+  uint32_t lastTry = millis();
   while (true) {
     web.handleClient();
     handleCaptiveDns();
+    if (bgRetry) {
+      if (WiFi.status() == WL_CONNECTED && WiFi.softAPgetStationNum() == 0) {
+        LOGN("[captive] saved WiFi is back — rebooting into normal mode");
+        delay(500);
+        ESP.restart();
+      }
+      if (millis() - lastTry > 30000UL && WiFi.status() != WL_CONNECTED &&
+          WiFi.softAPgetStationNum() == 0) {
+        lastTry = millis();
+        LOGN("[captive] retrying saved WiFi...");
+        WiFi.disconnect();
+        WiFi.begin(bgSsid.c_str(), bgPass.c_str());
+      }
+    }
     delay(2);
   }
 }
@@ -1771,13 +1943,26 @@ void setup() {
   loadDhcpCfg();
   loadTxPowerCfg();
   loadSigReq();
+  loadCnameCfg();
   reopenBlocklist();
   LOG("[cfg] custom:%d banned:%d auth:%s txpower:%s\n", numCustom, numBanned, authPassword.c_str(), txPowerSetting.c_str());
   LOGN("[cfg] dashboard password: " + authPassword);
 
   if (!connectWiFi()) {
-    runCaptivePortal();  // blocks forever (reboots on save)
-    return;
+    // Power-cut recovery: the board usually boots faster than the router.
+    // With a saved network, keep retrying for ~3 minutes before falling back
+    // to the setup portal (which itself keeps retrying in the background).
+    if (hasSavedWifi()) {
+      for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++) {
+        LOG("[wifi] retry %d/10 in 5 s (router may still be booting)\n", i + 1);
+        delay(5000);
+        connectWiFi();
+      }
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      runCaptivePortal();  // blocks forever (reboots on save or when WiFi returns)
+      return;
+    }
   }
 
   if (MDNS.begin("c3adblock")) {
@@ -1827,6 +2012,7 @@ void setup() {
   web.on("/dhcp", handleDhcpToggle);
   web.on("/setwifi", HTTP_POST, handleSetWifi);
   web.on("/sigrequire", handleSigRequire);
+  web.on("/cname", handleCnameToggle);
   web.begin();
 
   ArduinoOTA.setHostname("c3adblock");

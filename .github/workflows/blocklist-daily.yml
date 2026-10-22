@@ -1,0 +1,45 @@
+name: Daily blocklist
+
+# Rebuilds the home blocklist every day and publishes it as the asset of the
+# "blocklist" release. Devices download it from:
+#   https://github.com/Lakkanna/9M2PJU-ESP32-C3-AdBlocker/releases/download/blocklist/blocklist.bin
+# HaGeZi updates its lists daily, so rotating ad/tracker hosts are picked up
+# without anyone editing this repo. Edit lists/extra-block.txt or
+# lists/allow.txt to add your own; commits to those files rebuild right away.
+# If the build would block anything in lists/must-work.txt, nothing is
+# published and devices keep the previous list.
+
+on:
+  schedule:
+    - cron: '30 21 * * *'   # 03:00 IST daily
+  push:
+    branches: [main]
+    paths: ['lists/**', 'tools/build_blocklist.py', 'tools/build_lakshya_list.sh']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Build list
+        run: bash tools/build_lakshya_list.sh blocklist.bin
+
+      - name: Publish as "blocklist" release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view blocklist >/dev/null 2>&1; then
+            gh release create blocklist --title "Daily blocklist" --latest=false \
+              --notes "Rebuilt daily by .github/workflows/blocklist-daily.yml. Devices auto-update from the blocklist.bin asset."
+          fi
+          gh release upload blocklist blocklist.bin --clobber
+          echo "published $(stat -c %s blocklist.bin) bytes"
