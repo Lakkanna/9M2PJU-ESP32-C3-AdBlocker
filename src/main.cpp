@@ -71,7 +71,7 @@ static const int MAX_BAN = 32;
 static const int MAX_DHCP_LEASES = 32;
 static const uint32_t UPSTREAM_TIMEOUT_MS = 2000;
 static const uint32_t REMOTE_FETCH_IDLE_MS = 3000;  // only fetch when DNS idle this long
-static const char* FIRMWARE_VERSION = "1.3.0";
+static const char* FIRMWARE_VERSION = "1.3.1";
 static const String DASHBOARD_ETAG = String("c3adb-v") + FIRMWARE_VERSION;
 
 // ---- WiFi TX power & thermal configuration ----
@@ -1865,9 +1865,14 @@ static void runCaptivePortal() {
   String bgSsid, bgPass;
   bool bgRetry = loadWifiCfg(bgSsid, bgPass);
   if (!bgRetry && String(WIFI_SSID) != "YOUR_WIFI_SSID") { bgSsid = WIFI_SSID; bgPass = WIFI_PASS; bgRetry = true; }
+  // Stop the station side from searching on its own. A station that is
+  // looking for a missing network hops across channels nonstop, which keeps
+  // knocking the setup AP off the air so phones can't join it. Background
+  // retries below are short, spaced out, and skipped while a phone is on.
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect();
   WiFi.mode(bgRetry ? WIFI_AP_STA : WIFI_AP);
   WiFi.softAP("C3AdBlock-Setup");
-  if (bgRetry) WiFi.begin(bgSsid.c_str(), bgPass.c_str());
   applyTxPower(txPowerSetting);
   LOGN("\n[captive] AP: C3AdBlock-Setup — connect and open http://192.168.4.1");
   captiveDns.begin(53);
@@ -1891,22 +1896,37 @@ static void runCaptivePortal() {
   });
   web.begin();
 
+  // Background retry of the saved network: one 12 s attempt every 60 s,
+  // only while no phone is connected to the setup AP. Between attempts the
+  // station is idle, so the AP stays on its channel and phones can join.
+  const uint32_t RETRY_GAP_MS = 60000UL, RETRY_WINDOW_MS = 12000UL;
   uint32_t lastTry = millis();
+  bool trying = false;
+  uint32_t tryStart = 0;
   while (true) {
     web.handleClient();
     handleCaptiveDns();
     if (bgRetry) {
-      if (WiFi.status() == WL_CONNECTED && WiFi.softAPgetStationNum() == 0) {
-        LOGN("[captive] saved WiFi is back — rebooting into normal mode");
-        delay(500);
-        ESP.restart();
-      }
-      if (millis() - lastTry > 30000UL && WiFi.status() != WL_CONNECTED &&
-          WiFi.softAPgetStationNum() == 0) {
-        lastTry = millis();
-        LOGN("[captive] retrying saved WiFi...");
+      int phones = WiFi.softAPgetStationNum();
+      if (!trying) {
+        if (phones == 0 && millis() - lastTry > RETRY_GAP_MS) {
+          LOG("[captive] retrying saved WiFi \"%s\"...\n", bgSsid.c_str());
+          WiFi.begin(bgSsid.c_str(), bgPass.c_str());
+          trying = true;
+          tryStart = millis();
+        }
+      } else if (WiFi.status() == WL_CONNECTED) {
+        if (phones == 0) {
+          LOGN("[captive] saved WiFi is back — rebooting into normal mode");
+          delay(500);
+          ESP.restart();
+        }
+      } else if (phones > 0 || millis() - tryStart > RETRY_WINDOW_MS) {
+        // Not found (or a phone just joined): stop searching so the AP is stable.
         WiFi.disconnect();
-        WiFi.begin(bgSsid.c_str(), bgPass.c_str());
+        trying = false;
+        lastTry = millis();
+        if (phones == 0) LOGN("[captive] saved WiFi not found; setup network stays up");
       }
     }
     delay(2);
