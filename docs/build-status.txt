@@ -1,6 +1,6 @@
-commit: a6eb3f1d6e977a1a1846775e4a7dc26a692f5dd3
+commit: 65119464cb721b98ef86b171791b8eafc768b60e
 result: success
-date:   Thu Oct 22 17:42:20 UTC 2026
+date:   Thu Nov 12 13:42:45 UTC 2026
 ----- last 120 lines of build log -----
 Compiling .pio/build/c3-single/lib7aa/FS/FS.cpp.o
 Compiling .pio/build/c3-single/lib7aa/FS/vfs_api.cpp.o
@@ -10,21 +10,21 @@ Compiling .pio/build/c3-single/lib620/LittleFS/LittleFS.cpp.o
 Compiling .pio/build/c3-single/lib1ce/WebServer/Parsing.cpp.o
 Archiving .pio/build/c3-single/lib7aa/libFS.a
 Indexing .pio/build/c3-single/lib7aa/libFS.a
+Compiling .pio/build/c3-single/lib1ce/WebServer/WebServer.cpp.o
 Archiving .pio/build/c3-single/lib620/libLittleFS.a
 Indexing .pio/build/c3-single/lib620/libLittleFS.a
-Compiling .pio/build/c3-single/lib1ce/WebServer/WebServer.cpp.o
-Compiling .pio/build/c3-single/lib1ce/WebServer/detail/mimetable.cpp.o
-Compiling .pio/build/c3-single/FrameworkArduino/Esp.cpp.o
 Archiving .pio/build/c3-single/lib67b/libHTTPClient.a
 Indexing .pio/build/c3-single/lib67b/libHTTPClient.a
+Compiling .pio/build/c3-single/lib1ce/WebServer/detail/mimetable.cpp.o
+Compiling .pio/build/c3-single/FrameworkArduino/Esp.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/FirmwareMSC.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/FunctionalInterrupt.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/HWCDC.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/HardwareSerial.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/IPAddress.cpp.o
-Compiling .pio/build/c3-single/FrameworkArduino/IPv6Address.cpp.o
 Archiving .pio/build/c3-single/lib1ce/libWebServer.a
 Indexing .pio/build/c3-single/lib1ce/libWebServer.a
+Compiling .pio/build/c3-single/FrameworkArduino/IPv6Address.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/MD5Builder.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/Print.cpp.o
 Compiling .pio/build/c3-single/FrameworkArduino/Stream.cpp.o
@@ -71,18 +71,18 @@ Retrieving maximum program size .pio/build/c3-single/firmware.elf
 Checking size .pio/build/c3-single/firmware.elf
 Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
 RAM:   [==        ]  17.4% (used 57004 bytes from 327680 bytes)
-Flash: [========  ]  81.3% (used 1065528 bytes from 1310720 bytes)
+Flash: [========  ]  81.3% (used 1065648 bytes from 1310720 bytes)
 Building .pio/build/c3-single/firmware.bin
 esptool.py v4.11.0
 Creating esp32c3 image...
 Merged 2 ELF sections
 Successfully created esp32c3 image.
-========================= [SUCCESS] Took 45.72 seconds =========================
+========================= [SUCCESS] Took 46.44 seconds =========================
 
 Environment    Status    Duration
 -------------  --------  ------------
-c3-single      SUCCESS   00:00:45.715
-========================= 1 succeeded in 00:00:45.715 =========================
+c3-single      SUCCESS   00:00:46.444
+========================= 1 succeeded in 00:00:46.444 =========================
 Processing c3-single (platform: espressif32@7.1.3; board: esp32-c3-devkitm-1; framework: arduino)
 --------------------------------------------------------------------------------
 Tool Manager: Installing platformio/tool-mklittlefs @ ~1.203.0
@@ -116,9 +116,9 @@ Building in release mode
 Building FS image from 'data' directory to .pio/build/c3-single/littlefs.bin
 /blocklist.bin
 /.gitkeep
-========================= [SUCCESS] Took 2.81 seconds =========================
+========================= [SUCCESS] Took 2.80 seconds =========================
 
 Environment    Status    Duration
 -------------  --------  ------------
-c3-single      SUCCESS   00:00:02.808
-========================= 1 succeeded in 00:00:02.808 =========================
+c3-single      SUCCESS   00:00:02.801
+========================= 1 succeeded in 00:00:02.801 =========================
